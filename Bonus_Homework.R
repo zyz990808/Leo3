@@ -1,0 +1,187 @@
+---
+  title: "Bonus Homework"
+author: "Yizhong Zhang, Shakiru Oyeniran, Chengze Song"
+date: "2023-08-31"
+output: html_document
+bibliography: biblio.bib
+---
+  
+  ```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Source:<https://github.com/SMAC-Group/irg/blob/master/vignettes/vignette.Rmd>
+  
+  The ```irg``` package is based on the procedure proposed in @harrar2013taste
+
+```{r, message=FALSE, warning=FALSE}
+library(irg)
+```
+
+The functions made available allow to perform Granger-Causal testing for signals that are sampled at the same but irregularly spaced time points. Before using the functions in the package, the signals need to be pre-processed such that they are detrended (mean-stationary) and standardized (normalized). Below we show some examples of possible ways of pre-processing the signals as well as how to use the main functions of the package.
+
+## Data Pre-Processing
+
+In this section we use data that was collected during an experiment that measured the time-evolved transcriptome of the three replicates of Arabidopsis roots and shoots. The data `raw_data` contains a matrix reporting a gene expression count for root and shoot collected at the following time points: 0, 5, 10, 15, 20, 30, 45, 60, 90 and 120 (minutes).
+
+```{r}
+data(raw_data)
+head(raw_data)
+```
+
+We decide to use the following simple functions to pre-process the data in this matrix (but other pre-processing techniques can be chosen).
+
+
+```{r, message=FALSE, warning=FALSE}
+library(mgcv)
+```
+Average signals at matching time points and then standardize
+```{r}
+avg <- function(signals) {
+  
+  signal <- rep(NA, length(signals)/3)
+  
+  for(i in 1:(length(signals)/3)) {
+    
+    signal[i] <- mean(signals[(3*(i-1) + 1) : (3*i)])
+    
+  }
+  
+  signal_std <- (signal - mean(signal))/sd(signal)
+  
+  return(signal_std)
+  
+}
+```
+Pre-processing function that uses GAM to detrend the signals and then uses previous function to aggregate and normalize
+```{r}
+pre_process <- function(dat_mat) {
+  
+  root <- dat_mat[,1]
+  shoot <- dat_mat[,2]
+  time <- dat_mat[,3]
+  
+  mod_root <- gam(root ~ s(time))
+  mod_shoot <- gam(shoot ~ s(time))
+  
+  resid_root <- avg(resid(mod_root))
+  resid_shoot <- avg(resid(mod_shoot))
+  
+  out <- list(root = resid_root, shoot = resid_shoot)
+  
+  return(out)
+  
+}
+```
+
+
+If we apply the `pre_process` function to the raw signals we obtain the following:
+  
+  ```{r}
+signals <- pre_process(raw_data)
+signals
+```
+
+The result of the pre-processing is saved in the `signals` data made available with the `irg` package.
+
+
+
+# Granger-Causal Testing
+
+Once the signals have been pre-processed, it is possible to make use of the ```irg``` package functions and for this we make use of the pre-processed signals made available in the package: ```arabidopsis```.
+
+```{r data}
+library(irg)
+data(arabidopsis)
+```
+
+This is a list containing two dataframes, for root (```$roots```) and shoot (```$shoots```) signals respectively, containing the gene expressions collected over the following time points: 0, 5, 10, 15, 20, 30, 45, 60, 90, 120 (in minutes). It can be noticed how the time intervals are irregular between measurements and therefore the ```irg``` package makes available a Granger-Causal testing framework for these specific settings.
+
+The main function of the package is the ```granger_test``` function. The null hypothesis for all tests that this function implements is the following:
+  
+  “**H~0~**: The two signals have no Granger-Causal impact on each other”.
+
+The goal of the function is to understand whether this null hypothesis can be rejected in favour of a specific alternative hypothesis, an example of which is given by:
+  
+  “**H~A~**: The first signal (root) has a Granger-Causal impact on the second signal (shoot)”.
+
+In order to perform this test of hypotheses, Heerah et al. (2021) put forward a bivariate autoregressive model for irregularly sampled signals mainly characterized by the following parameter vector (other parameters not in this vector are implicitly defined in the function):
+  
+  $$\theta := [\phi _{root}, \psi _{root}, \gamma _{root}, \sigma _{root}^{2}, \phi _{shoot}, \psi _{shoot}, \gamma _{shoot}, \sigma _{shoot}^{2}]$$
+  
+  The subscripts “root” and “shoot” underline how these parameters contribute to the behaviour over time of either the first signal (root) or second signal (shoot). While the $\phi $ and $\sigma ^{2}$ parameters are specific to the dependence of a signal only on its own past (and represent the range of dependence on the past and the residual variance respectively), the main parameters of interest for the mentioned Granger-Causal testing framework are the $\phi$ and $\gamma$ parameters which represent the “intensity” and “time” of maximal (Granger-Causal) impact of one signal on the other. More specifically, $\psi \in (-1,1)$ can be interpreted similarly to Pearson’s correlation coefficient: the closer the value is to 1 (in absolute value) the greater is the impact of one signal on the other, while the sign represents the direction of the impact where, for example, a negative value implies that the impacted signal grows as the “causing” signal descreases (and viceversa). The $\gamma \in \mathbb{R}^{+}$ parameter instead represents the distance in time at which the impact of one signal on the other is maximal (under the assumption that the impact increases and then decreases monotonically over time). So, for example, $\psi _{root}$ represents the intensity of the impact of the shoot (second signal) on the root (first signal) while $\gamma _{root}$ represents the time required for the impact of the shoot on the root to be maximal.
+
+Estimating the parameters of these models via maximum-likelihood (under a Gaussian assumption), it is then possible to perform a Likelihood Ratio Test (LRT) to understand if the model under the alternative hypothesis significantly improves the fit of the signals. Given the short length of signals usually measured in biological experiments, the LRT test is performed using parametric bootstrap to approximate the small sample distribution under the null hypothesis. This procedure is performed by the ```granger_test``` function whose syntax is given below:
+  
+  ```
+granger_test(root, shoot, times, theta = NULL, alternative = "twodir", 
+             H = 100, seed = 123, showprogress = TRUE)
+```
+
+The first two arguments are the first (```root```) and second (```shoot```) signals for which we want to test a Granger-Causal relationship. The ```times``` argument is the numeric vector containing the time points at which the measurements were taken (in the same unit of time) while ```theta``` represents numeric vector (of length 8) containing the starting values for the parameter vector $\theta$ described earlier (if left empty, the starting values will be estimated by the function itself). The ```alternative``` argument represents the alternative hypothesis we’re interested in testing: by default we have ```alternative = "twodir"``` which indicates that we’re testing the alternative hypothesis:
+  
+  “**H~A~**: The two signals have a Granger-Causal impact on each other”.
+
+The other possible alternative syntax is the following:
+  
+  1. "```rtos```": “**H~A~**: the first signal (root) has a Granger-Causal impact on the second signal (shoot)”.
+
+2. "```stor```": “**H~A~**: the second signal (shoot) has a Granger-Causal impact on the first signal (root)”.
+
+The final arguments to the function concern the parametric bootstrap procedure used to generate the null distribution:
+  
+  + ```H```: the number of bootstrap replicates. The larger this number is, the better the approximation of the null distribution but the slower the procedure will be to perform the test.
+
++ ```seed```: the seed value used to generate the signals for the bootstrap distribution. A fixed seed allows to replicate the exact results of the test.
+
++ ```showprogress```: a boolean parameter allowing to visualize (or not) a progress bar to update the user on the progress of the bootstrap procedure (particularly useful with large values of H and/or longer signals).
+
+To perform this parametric bootstrap procedure, the ```granger_test``` uses the ```sim_proc``` function also made available by the ```irg``` package. Let us suppose that we want to simulate bivariate signals from the above mentioned model where only the second signal (shoot) has a Granger-Causal impact on the first and are measured at the same time points as the ```arabidopsis``` data also mentioned earlier. Then we could simulate this process as follows:
+  
+  ```{r data2}
+theta_sim <- c(1, 0.99, 10, 0.01, 1, 0, 0, 0.1) # the parameter vector used to simulate data
+times <- c(0, 5, 10, 15, 20, 30, 45, 60, 90, 120) # the measurement time points
+
+set.seed(223) # set seed for example replicability
+sim <- sim_proc(theta_sim, times) # simulate the bivariate time series
+```
+
+It can be noticed how the values for $\psi _{shoot}$ and $\gamma  _{shoot}$ are zero, indicating that the first signal (root) has no impact on the second (shoot). The object ```sim``` is a list containing the simulated values for the first signal (```$root```) and second signal (```$shoot```) and can now be used within the ```granger_test``` function as follows:
+  
+  ```{r theta}
+granger_test(root = sim$root, shoot = sim$shoot, times = times, alternative = "stor", H = 100, showprogress = FALSE)
+```
+
+It can be noticed how the values for $\psi _{shoot}$ and $\gamma _{shoot}$ are zero, indicating that the first signal (root) has no impact on the second (shoot). The object ```sim``` is a list containing the simulated values for the first signal (```$root```) and second signal (```$shoot```) and can now be used within the ```granger_test``` function as follows:
+  
+  ```{r granger_test1}
+granger_test(root = sim$root, shoot = sim$shoot, times = times, alternative = "stor", H = 100, showprogress = FALSE)
+```
+
+We can see that the output of this function is a list with the following four elements:
+  
+  1. ```alternative```: the code of the alternative hypothesis being tested.
+
+2. ```stat```: the value of the LRT statistic for the Granger-Causal alternative hypothesis being tested.
+
+3. ```pvalue```: the p-value of the test, with a small p-value indicating evidence to reject the null hypothesis in favour of the specified alternative.
+
+4. ```parameters```: the values of the parameters of interest for the specific alternative hypothesis (i.e. the ψ and γ parameters).
+
+In this simulated example we see that, at a significance level of 0.01, we can reject the null hypothesis in favour of the alternative hypothesis (indeed, in this case we obtain the smallest p-value attainable given the value of ```H```). Hence, having rejected the null hypothesis we can go and interpret the parameter values which, as can be seen, are very close to the true parameter values from which we simulated.
+
+Having seen the performance of the test in a controlled simulated setting, let us apply the test to two signals from the real data contained in ```arabidopsis``` and analysed in Heerah et al. (2021). This time we (i) specify a starting value for the parameter vector, (ii) use a larger value of ```H``` for a better approximation of the null distribution and (iii) test the alternative hypothesis that the first signal (root) has a Granger-Causal impact on the second signal (shoot).
+
+```{r granger_test2, cache=TRUE}
+root  <- arabidopsis$roots["AT4G27950", ]
+shoot <- arabidopsis$shoots["AT4G34750", ]
+theta_start <- c(1, 0.5, 10, 1, 1, 0.5, 10, 1) # starting values for parameter vector
+
+granger_test(root, shoot, times = times, theta = theta_start, alternative = "rtos", H = 1000, showprogress = FALSE)
+```
+
+Also in this case, the p-value is the smallest possible given the value of ```H``` and we can reject the null hypothesis in favour of the specified alternative. Having done so, we can see that the second signal (shoot) is positively impacted by the first signal (root) meaning that the second signal increases if the first does so too (and viceversa). In addition, this impact is maximal at a distance in time of roughly 6.5 minutes.
+
+# Reference
+
+This package is developed based on the work put forward in Heerah et al. (2021).
