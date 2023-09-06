@@ -1,0 +1,5 @@
+f <- expression(2*x^3-6*x^2+7)
+dx <- deriv3(f, "x", function.arg = TRUE)
+polyroot(c(0,-12,6))
+dx(0)
+dx(2)
